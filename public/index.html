@@ -1,0 +1,562 @@
+HTML
+
+<!DOCTYPE html>
+
+<html lang="ja">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <title>オンライン対戦型 エアーホッケー</title>
+
+    <script src="/socket.io/socket.io.js"></script>
+
+    <style>
+
+        body {
+
+            background-color: #222;
+
+            color: white;
+
+            font-family: sans-serif;
+
+            text-align: center;
+
+            margin: 0;
+
+            padding: 0;
+
+            overflow: hidden;
+
+        }
+
+        h1 { font-size: 24px; margin: 10px 0 5px; }
+
+        canvas {
+
+            background-color: #333;
+
+            border: 4px solid #fff;
+
+            display: block;
+
+            margin: 10px auto;
+
+            max-width: 95vw;
+
+            max-height: 70vh;
+
+        }
+
+        .info-container {
+
+            font-size: 24px;
+
+            font-weight: bold;
+
+            display: flex;
+
+            justify-content: center;
+
+            gap: 40px;
+
+            margin-top: 5px;
+
+        }
+
+        .time { color: #ffcc00; }
+
+        #roleInfo {
+
+            color: #00ff88;
+
+            font-size: 18px;
+
+            margin-top: 5px;
+
+            font-weight: bold;
+
+            height: 24px;
+
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+
+
+    <h1>エアーホッケー（オンライン通信対戦）</h1>
+
+    <div id="roleInfo">サーバーに接続中...</div>
+
+    <div class="info-container">
+
+        <div>赤: <span id="score1">0</span> | 青: <span id="score2">0</span></div>
+
+        <div class="time">残り時間: <span id="timer">45</span>秒</div>
+
+    </div>
+
+   
+
+    <canvas id="gameCanvas" width="800" height="500"></canvas>
+
+
+
+    <script>
+
+        const socket = io(); // サーバーに接続
+
+        const canvas = document.getElementById("gameCanvas");
+
+        const ctx = canvas.getContext("2d");
+
+
+
+        let myRole = 'spectator'; // 自分の役割 ('red', 'blue', 'spectator')
+
+        let score1 = 0;
+
+        let score2 = 0;
+
+        let timeLeft = 45;
+
+        let gameOver = false;
+
+
+
+        // サーバーから役割の割り当てを受け取る
+
+        socket.on('assignPlayer', (role) => {
+
+            myRole = role;
+
+            const infoDiv = document.getElementById("roleInfo");
+
+            if (role === 'red') infoDiv.innerText = "あなたは【赤プレイヤー（左側）】です (W,A,S,D または ドラッグ操作)";
+
+            if (role === 'blue') infoDiv.innerText = "あなたは【青プレイヤー（右側）】です (矢印キー または ドラッグ操作)";
+
+            if (role === 'spectator') infoDiv.innerText = "満員です：現在は【観戦モード】です";
+
+        });
+
+
+
+        // サーバーからの各種イベント同期
+
+        socket.on('timeUpdate', (time) => { timeLeft = time; document.getElementById("timer").innerText = timeLeft; });
+
+        socket.on('gameOver', () => { gameOver = true; });
+
+        socket.on('gameReset', () => { resetGameLocal(); });
+
+       
+
+        // 相手プレイヤーの移動データを反映
+
+        socket.on('playerMoved', (data) => {
+
+            if (data.role === 'red') { p1.x = data.x; p1.y = data.y; }
+
+            if (data.role === 'blue') { p2.x = data.x; p2.y = data.y; }
+
+        });
+
+
+
+        // パックとスコアの同期（赤以外の端末が受信して上書きする）
+
+        socket.on('syncPuckAndScores', (data) => {
+
+            if (myRole !== 'red') {
+
+                puck.x = data.puck.x;
+
+                puck.y = data.puck.y;
+
+                score1 = data.scores.score1;
+
+                score2 = data.scores.score2;
+
+                document.getElementById("score1").innerText = score1;
+
+                document.getElementById("score2").innerText = score2;
+
+            }
+
+        });
+
+
+
+        // キー入力の状態管理
+
+        const keys = {};
+
+        window.addEventListener("keydown", (e) => {
+
+            keys[e.key] = true;
+
+            if (gameOver && (e.key === "r" || e.key === "R")) {
+
+                socket.emit('requestRetry'); // サーバーにリトライを要求
+
+            }
+
+        });
+
+        window.addEventListener("keyup", (e) => keys[e.key] = false);
+
+
+
+        // 📱 スマホ・タブレット用のタッチ・ドラッグ操作対応
+
+        canvas.addEventListener("touchmove", (e) => {
+
+            if (gameOver || myRole === 'spectator') return;
+
+            e.preventDefault(); // 画面スクロールを禁止
+
+           
+
+            const rect = canvas.getBoundingClientRect();
+
+            const touch = e.touches[0];
+
+           
+
+            // タッチ位置をキャンバス内の解像度座標（800x500）に変換
+
+            let touchX = (touch.clientX - rect.left) * (canvas.width / rect.width);
+
+            let touchY = (touch.clientY - rect.top) * (canvas.height / rect.height);
+
+
+
+            // 自分の担当コート内でのみマレットを指に追従させる
+
+            if (myRole === 'red') {
+
+                if (touchX - p1.radius > 0 && touchX + p1.radius < canvas.width / 2) p1.x = touchX;
+
+                if (touchY - p1.radius > 0 && touchY + p1.radius < canvas.height) p1.y = touchY;
+
+                socket.emit('updateInput', { role: myRole, x: p1.x, y: p1.y });
+
+            }
+
+            if (myRole === 'blue') {
+
+                if (touchX - p2.radius > canvas.width / 2 && touchX + p2.radius < canvas.width) p2.x = touchX;
+
+                if (touchY - p2.radius > 0 && touchY + p2.radius < canvas.height) p2.y = touchY;
+
+                socket.emit('updateInput', { role: myRole, x: p2.x, y: p2.y });
+
+            }
+
+        }, { passive: false });
+
+
+
+        // スマホ結果画面タップでリトライ
+
+        canvas.addEventListener("touchstart", () => {
+
+            if (gameOver) socket.emit('requestRetry');
+
+        });
+
+
+
+        function resetGameLocal() {
+
+            score1 = 0; score2 = 0; timeLeft = 45; gameOver = false;
+
+            document.getElementById("score1").innerText = score1;
+
+            document.getElementById("score2").innerText = score2;
+
+            document.getElementById("timer").innerText = timeLeft;
+
+            p1.x = 100; p1.y = canvas.height / 2;
+
+            p2.x = 700; p2.y = canvas.height / 2;
+
+            puck.reset();
+
+            gameLoop();
+
+        }
+
+
+
+        // マレットクラス
+
+        class Mallet {
+
+            constructor(x, y, color, isLeft) {
+
+                this.x = x; this.y = y; this.radius = 30; this.color = color; this.speed = 6; this.isLeft = isLeft;
+
+            }
+
+            move(up, down, left, right) {
+
+                if (gameOver) return;
+
+                let moved = false;
+
+
+
+                if (keys[up] && this.y - this.radius > 0) { this.y -= this.speed; moved = true; }
+
+                if (keys[down] && this.y + this.radius < canvas.height) { this.y += this.speed; moved = true; }
+
+               
+
+                if (this.isLeft) {
+
+                    if (keys[left] && this.x - this.radius > 0) { this.x -= this.speed; moved = true; }
+
+                    if (keys[right] && this.x + this.radius < canvas.width / 2) { this.x += this.speed; moved = true; }
+
+                } else {
+
+                    if (keys[left] && this.x - this.radius > canvas.width / 2) { this.x -= this.speed; moved = true; }
+
+                    if (keys[right] && this.x + this.radius < canvas.width) { this.x += this.speed; moved = true; }
+
+                }
+
+
+
+                // 動いた場合のみ、自分の新しい座標をサーバー経由で相手に送る
+
+                if (moved) {
+
+                    socket.emit('updateInput', { role: myRole, x: this.x, y: this.y });
+
+                }
+
+            }
+
+            draw() {
+
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+
+                ctx.fillStyle = this.color; ctx.fill(); ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.stroke(); ctx.closePath();
+
+            }
+
+        }
+
+
+
+        // パックオブジェクト
+
+        const puck = {
+
+            x: canvas.width / 2, y: canvas.height / 2, radius: 15, dx: 4, dy: 4,
+
+            reset() {
+
+                this.x = canvas.width / 2; this.y = canvas.height / 2;
+
+                this.dx = (Math.random() > 0.5 ? 4 : -4); this.dy = (Math.random() > 0.5 ? 3 : -3);
+
+            },
+
+            move() {
+
+                if (gameOver) return;
+
+
+
+                // 💡【重要】通信のズレ（お互いの画面で球が分裂する現象）を防ぐため、パックの軌道計算とゴール判定は「赤プレイヤー」の端末のみで行う仕様にしています。
+
+                if (myRole === 'red') {
+
+                    this.x += this.dx;
+
+                    this.y += this.dy;
+
+
+
+                    if (this.y - this.radius < 0 || this.y + this.radius > canvas.height) {
+
+                        if (this.y - this.radius < 0) this.y = this.radius;
+
+                        if (this.y + this.radius > canvas.height) this.y = canvas.height - this.radius;
+
+                        this.dy *= -1;
+
+                    }
+
+
+
+                    const goalTop = 150; const goalBottom = 350;
+
+
+
+                    if (this.x - this.radius < 0) {
+
+                        if (this.y > goalTop && this.y < goalBottom) {
+
+                            score2++; document.getElementById("score2").innerText = score2; this.reset();
+
+                        } else { this.x = this.radius; this.dx *= -1; }
+
+                    }
+
+
+
+                    if (this.x + this.radius > canvas.width) {
+
+                        if (this.y > goalTop && this.y < goalBottom) {
+
+                            score1++; document.getElementById("score1").innerText = score1; this.reset();
+
+                        } else { this.x = canvas.width - this.radius; this.dx *= -1; }
+
+                    }
+
+                    // 計算したパックの位置と最新スコアを、青プレイヤーや観戦者に送信
+
+                    socket.emit('updatePuckAndScores', { role: myRole, puck: { x: this.x, y: this.y }, scores: { score1: score1, score2: score2 } });
+
+                }
+
+            },
+
+            draw() { ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.fill(); ctx.closePath(); }
+
+        };
+
+
+
+        const p1 = new Mallet(100, canvas.height / 2, "#ff4757", true);
+
+        const p2 = new Mallet(700, canvas.height / 2, "#1e90ff", false);
+
+
+
+        function checkCollision(player, ball) {
+
+            if (gameOver) return;
+
+            let distX = ball.x - player.x; let distY = ball.y - player.y;
+
+            let distance = Math.sqrt(distX * distX + distY * distY);
+
+
+
+            if (distance < player.radius + ball.radius) {
+
+                let overlap = (player.radius + ball.radius) - distance;
+
+                ball.x += (distX / distance) * overlap; ball.y += (distY / distance) * overlap;
+
+                ball.dx = (distX / distance) * 7; ball.dy = (distY / distance) * 7;
+
+            }
+
+        }
+
+
+
+        function drawCourt() {
+
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.3)"; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(canvas.width / 2, 0); ctx.lineTo(canvas.width / 2, canvas.height); ctx.stroke();
+
+            ctx.beginPath(); ctx.arc(canvas.width / 2, canvas.height / 2, 60, 0, Math.PI * 2); ctx.stroke();
+
+            ctx.strokeStyle = "#fff"; ctx.lineWidth = 4; ctx.strokeRect(0, 150, 20, 200); ctx.strokeRect(canvas.width - 20, 150, 20, 200);
+
+        }
+
+
+
+        function drawResult() {
+
+            ctx.fillStyle = "rgba(0, 0, 0, 0.6)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+
+            ctx.font = "bold 44px sans-serif";
+
+            let resultText = "";
+
+            if (score1 > score2) { ctx.fillStyle = "#ff4757"; resultText = "赤プレイヤーの勝ち！"; }
+
+            else if (score2 > score1) { ctx.fillStyle = "#1e90ff"; resultText = "青プレイヤーの勝ち！"; }
+
+            else { ctx.fillStyle = "#ffcc00"; resultText = "引き分け！"; }
+
+            ctx.fillText(resultText, canvas.width / 2, canvas.height / 2 - 30);
+
+
+
+            ctx.fillStyle = "#ffffff"; ctx.font = "normal 22px sans-serif";
+
+            ctx.fillText("【R】キー または 画面タップでもう一度プレイ！", canvas.width / 2, canvas.height / 2 + 50);
+
+        }
+
+
+
+        function gameLoop() {
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            drawCourt();
+
+
+
+            // 自分の割り当てられたキャラクターのみキーボードで動かす
+
+            if (myRole === 'red') p1.move("w", "s", "a", "d");
+
+            if (myRole === 'blue') p2.move("ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight");
+
+
+
+            // 衝突判定も、処理の主導権をもつ赤側でまとめて計算
+
+            if (myRole === 'red') {
+
+                checkCollision(p1, puck);
+
+                checkCollision(p2, puck);
+
+            }
+
+
+
+            puck.move();
+
+            p1.draw(); p2.draw(); puck.draw();
+
+
+
+            if (gameOver) { drawResult(); return; }
+
+            requestAnimationFrame(gameLoop);
+
+        }
+
+
+
+        gameLoop();
+
+    </script>
+
+</body>
+
+</html> 
+
